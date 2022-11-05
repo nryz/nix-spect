@@ -4,14 +4,13 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::io;
-use std::process::Command;
+use std::{io, process::Command, time};
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::Text,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 
@@ -60,9 +59,14 @@ impl<T> StatefulList<T> {
     }
 }
 
+enum ListOrValue {
+    List(Vec<String>),
+    Value(String),
+}
+
 struct App {
     current_items: StatefulList<String>,
-    preview_items: Vec<String>,
+    preview_items: ListOrValue,
     current_path: String,
     current_selected: String,
     preview_path: String,
@@ -89,7 +93,7 @@ impl App {
 
         App {
             current_items,
-            preview_items,
+            preview_items: ListOrValue::List(preview_items),
             current_path,
             current_selected,
             preview_path,
@@ -113,10 +117,9 @@ impl App {
                 Err(error) => error,
             };
 
-            self.preview_items = Vec::new();
-            self.preview_items.push(value);
+            self.preview_items = ListOrValue::Value(value);
         } else {
-            self.preview_items = items;
+            self.preview_items = ListOrValue::List(items);
         }
     }
 
@@ -131,15 +134,17 @@ impl App {
     }
 
     fn step_in(&mut self) {
-        if self.preview_items.is_empty() {
-            return;
+        if let ListOrValue::List(list) = &self.preview_items {
+            if list.is_empty() {
+                return;
+            }
+
+            self.current_path.push('.');
+            self.current_path.push_str(&self.current_selected);
+
+            self.current_items = StatefulList::with_items(list.clone());
+            self.update_current_selected();
         }
-
-        self.current_path.push('.');
-        self.current_path.push_str(&self.current_selected);
-
-        self.current_items = StatefulList::with_items(self.preview_items.clone());
-        self.update_current_selected();
     }
 
     fn step_out(&mut self) {
@@ -229,36 +234,49 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
 
-    let preview_items: Vec<ListItem> = app
-        .preview_items
-        .iter()
-        .map(|i| ListItem::new(Text::raw(i)).style(Style::default().fg(Color::Green)))
-        .collect();
+    match &app.preview_items {
+        ListOrValue::List(list) => {
+            let preview_items: Vec<ListItem> = list
+                .iter()
+                .map(|i| ListItem::new(Text::raw(i)).style(Style::default().fg(Color::Green)))
+                .collect();
 
-    let preview_list = List::new(preview_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(&*app.current_selected),
-    );
+            let preview = List::new(preview_items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(&*app.current_selected),
+            );
+
+            frame.render_widget(preview, chunks[1]);
+        }
+        ListOrValue::Value(value) => {
+            let preview = Paragraph::new(value.clone())
+                .style(Style::default())
+                .block(Block::default());
+
+            frame.render_widget(preview, chunks[1]);
+        }
+    };
 
     frame.render_stateful_widget(current_list, chunks[0], &mut app.current_items.state);
-    frame.render_widget(preview_list, chunks[1]);
 }
 
 fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| render(frame, app))?;
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => {
-                    return Ok(());
+        if event::poll(time::Duration::from_millis(1000))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        return Ok(());
+                    }
+                    KeyCode::Char('j') => app.next(),
+                    KeyCode::Char('k') => app.previous(),
+                    KeyCode::Char('h') => app.step_out(),
+                    KeyCode::Char('l') => app.step_in(),
+                    _ => (),
                 }
-                KeyCode::Char('j') => app.next(),
-                KeyCode::Char('k') => app.previous(),
-                KeyCode::Char('h') => app.step_out(),
-                KeyCode::Char('l') => app.step_in(),
-                _ => (),
             }
         }
     }
