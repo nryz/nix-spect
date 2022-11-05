@@ -149,13 +149,23 @@ impl App {
 
     fn step_out(&mut self) {
         let mut suffix = '.'.to_string();
-        suffix.push_str(self.current_path.split('.').last().unwrap());
+        let current_path_clone = self.current_path.clone();
+        let suffix_without_dot = current_path_clone.split('.').last().unwrap();
+        suffix.push_str(suffix_without_dot);
 
         if let Some(string) = self.current_path.strip_suffix(&suffix) {
             self.current_path = string.to_string();
         }
 
         self.current_items = StatefulList::with_items(get_completions(&self.current_path).unwrap());
+
+        let new_select_index = self
+            .current_items
+            .items
+            .iter()
+            .position(|r| r == suffix_without_dot.trim());
+
+        self.current_items.state.select(new_select_index);
         self.update_current_selected();
     }
 }
@@ -202,7 +212,7 @@ fn get_completions(path: &str) -> Result<Vec<String>, String> {
     let mut completions: Vec<String> = Vec::new();
     for s in out.lines() {
         if !s.eq("attrs") {
-            completions.push(s.to_string().replace(&path, ""));
+            completions.push(s.to_string().replace(&path, "").trim().to_string());
         }
     }
 
