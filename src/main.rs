@@ -10,7 +10,7 @@ use tui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::Text,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 
@@ -248,7 +248,7 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
         ListOrValue::List(list) => {
             let preview_items: Vec<ListItem> = list
                 .iter()
-                .map(|i| ListItem::new(Text::raw(i)).style(Style::default().fg(Color::Green)))
+                .map(|i| ListItem::new(Text::raw(i)).style(Style::default()))
                 .collect();
 
             let preview = List::new(preview_items).block(
@@ -261,8 +261,9 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
         }
         ListOrValue::Value(value) => {
             let preview = Paragraph::new(value.clone())
+                .wrap(Wrap { trim: true })
                 .style(Style::default())
-                .block(Block::default());
+                .block(Block::default().borders(Borders::ALL));
 
             frame.render_widget(preview, chunks[1]);
         }
