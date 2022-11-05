@@ -1,7 +1,181 @@
 use clap::{arg, command};
+use std::io;
+use std::io::Read;
 use std::process::Command;
+use termion::{async_stdin, event::Key, input::TermRead, raw::IntoRawMode};
+use tui::{
+    backend::{Backend, TermionBackend},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::Text,
+    widgets::{Block, Borders, List, ListItem, ListState},
+    Frame, Terminal,
+};
 
-fn get_completions(path: String) -> Result<Vec<String>, String> {
+struct StatefulList<T> {
+    state: ListState,
+    items: Vec<T>,
+}
+
+impl<T> StatefulList<T> {
+    fn with_items(items: Vec<T>) -> StatefulList<T> {
+        let mut list = StatefulList {
+            state: ListState::default(),
+            items,
+        };
+
+        list.state.select(Some(0));
+        list
+    }
+
+    fn next(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    fn previous(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+}
+
+struct App {
+    current_items: StatefulList<String>,
+    preview_items: Vec<String>,
+    current_path: String,
+    current_selected: String,
+    preview_path: String,
+}
+
+impl App {
+    fn new(current_path: String) -> App {
+        let current_items = get_completions(&current_path).unwrap();
+        let current_items = StatefulList::with_items(current_items);
+        let current_selected = match current_items.state.selected() {
+            Some(i) => current_items.items[i].trim().to_owned(),
+            None => "none".to_string(),
+        };
+
+        let mut preview_path = current_path.clone();
+        preview_path.push('.');
+        preview_path.push_str(&current_selected);
+
+        let preview_items = get_completions(&preview_path).unwrap();
+
+        if preview_items.is_empty() {
+            panic!("preview_items are empty");
+        }
+
+        App {
+            current_items,
+            preview_items,
+            current_path,
+            current_selected,
+            preview_path,
+        }
+    }
+
+    fn update_current_selected(&mut self) {
+        self.current_selected = match self.current_items.state.selected() {
+            Some(i) => self.current_items.items[i].trim().to_owned(),
+            None => "none".to_string(),
+        };
+
+        self.preview_path = self.current_path.clone();
+        self.preview_path.push('.');
+        self.preview_path.push_str(&self.current_selected);
+
+        let items = get_completions(&self.preview_path).unwrap();
+        if items.is_empty() {
+            let value = match get_value(&self.preview_path) {
+                Ok(value) => value,
+                Err(error) => error,
+            };
+
+            self.preview_items = Vec::new();
+            self.preview_items.push(value);
+        } else {
+            self.preview_items = items;
+        }
+    }
+
+    fn previous(&mut self) {
+        self.current_items.previous();
+        self.update_current_selected();
+    }
+
+    fn next(&mut self) {
+        self.current_items.next();
+        self.update_current_selected();
+    }
+
+    fn step_in(&mut self) {
+        if self.preview_items.is_empty() {
+            return;
+        }
+
+        self.current_path.push('.');
+        self.current_path.push_str(&self.current_selected);
+
+        self.current_items = StatefulList::with_items(self.preview_items.clone());
+        self.update_current_selected();
+    }
+
+    fn step_out(&mut self) {
+        let mut suffix = '.'.to_string();
+        suffix.push_str(self.current_path.split('.').last().unwrap());
+
+        if let Some(string) = self.current_path.strip_suffix(&suffix) {
+            self.current_path = string.to_string();
+        }
+
+        self.current_items = StatefulList::with_items(get_completions(&self.current_path).unwrap());
+        self.update_current_selected();
+    }
+}
+
+fn get_value(path: &str) -> Result<String, String> {
+    let path = path.to_owned();
+
+    let result = Command::new("nix")
+        .arg("eval")
+        .arg(&path)
+        .output()
+        .expect("command failed to run");
+
+    if !result.status.success() {
+        let error = String::from_utf8(result.stderr).unwrap();
+        return Err(format!("Error: {}", error));
+    }
+
+    Ok(String::from_utf8(result.stdout).unwrap())
+}
+
+fn get_completions(path: &str) -> Result<Vec<String>, String> {
+    let mut path = path.to_owned();
+
+    if !path.ends_with('.') && !path.ends_with('#') {
+        path.push('.');
+    }
+
     let result = Command::new("nix")
         .arg("eval")
         .arg("--raw")
@@ -23,10 +197,52 @@ fn get_completions(path: String) -> Result<Vec<String>, String> {
             completions.push(s.to_string().replace(&path, ""));
         }
     }
+
     Ok(completions)
 }
 
-fn main() {
+fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(frame.size());
+
+    let current_items: Vec<ListItem> = app
+        .current_items
+        .items
+        .iter()
+        .map(|i| ListItem::new(Text::raw(i)).style(Style::default()))
+        .collect();
+
+    let mut path_title = app.current_path.clone();
+    path_title = path_title.split('#').last().unwrap().to_string();
+
+    let current_list = List::new(current_items)
+        .block(Block::default().borders(Borders::ALL).title(path_title))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Black)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let preview_items: Vec<ListItem> = app
+        .preview_items
+        .iter()
+        .map(|i| ListItem::new(Text::raw(i)).style(Style::default().fg(Color::Green)))
+        .collect();
+
+    let preview_list = List::new(preview_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(&*app.current_selected),
+    );
+
+    frame.render_stateful_widget(current_list, chunks[0], &mut app.current_items.state);
+    frame.render_widget(preview_list, chunks[1]);
+}
+
+fn main() -> Result<(), io::Error> {
     let matches = command!()
         .arg(arg!([flake] "flake path").required(true))
         .get_matches();
@@ -37,19 +253,37 @@ fn main() {
 
     let mut path: String = flake_path.to_owned();
 
+    if path.ends_with('.') {
+        panic!("flake path ends with .");
+    }
+
     if !path.contains('#') {
         path.push('#');
     }
 
-    if !path.ends_with('.') && !path.ends_with('#') {
-        path.push('.');
-    }
+    let backend = TermionBackend::new(io::stdout().into_raw_mode()?);
+    let mut terminal = Terminal::new(backend)?;
+    let mut asi = async_stdin();
 
-    println!("whole_path: {}", path);
+    terminal.clear()?;
 
-    let completions = get_completions(path).expect("Error while getting completions");
+    let mut app = App::new(path);
 
-    for c in completions {
-        println!("completion: {}", c);
+    loop {
+        terminal.draw(|frame| render(frame, &mut app))?;
+
+        for k in asi.by_ref().keys() {
+            match k.unwrap() {
+                Key::Char('q') => {
+                    terminal.clear()?;
+                    return Ok(());
+                }
+                Key::Char('j') => app.next(),
+                Key::Char('k') => app.previous(),
+                Key::Char('h') => app.step_out(),
+                Key::Char('l') => app.step_in(),
+                _ => (),
+            }
+        }
     }
 }
