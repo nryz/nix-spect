@@ -1,5 +1,5 @@
 [package]
-name = "nix-specter"
+name = "nix-spect"
 version = "0.0.0"
 edition = "2021"
 
