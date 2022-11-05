@@ -1,10 +1,13 @@
 use clap::{arg, command};
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use std::io;
-use std::io::Read;
 use std::process::Command;
-use termion::{async_stdin, event::Key, input::TermRead, raw::IntoRawMode};
 use tui::{
-    backend::{Backend, TermionBackend},
+    backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::Text,
@@ -242,16 +245,34 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
     frame.render_widget(preview_list, chunks[1]);
 }
 
+fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+    loop {
+        terminal.draw(|frame| render(frame, app))?;
+
+        if let Event::Key(key) = event::read()? {
+            match key.code {
+                KeyCode::Char('q') => {
+                    return Ok(());
+                }
+                KeyCode::Char('j') => app.next(),
+                KeyCode::Char('k') => app.previous(),
+                KeyCode::Char('h') => app.step_out(),
+                KeyCode::Char('l') => app.step_in(),
+                _ => (),
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), io::Error> {
     let matches = command!()
         .arg(arg!([flake] "flake path").required(true))
         .get_matches();
 
-    let flake_path = matches
+    let mut path = matches
         .get_one::<String>("flake")
-        .expect("expected a valid flake path");
-
-    let mut path: String = flake_path.to_owned();
+        .expect("expected a valid flake path")
+        .to_owned();
 
     if path.ends_with('.') {
         panic!("flake path ends with .");
@@ -261,29 +282,29 @@ fn main() -> Result<(), io::Error> {
         path.push('#');
     }
 
-    let backend = TermionBackend::new(io::stdout().into_raw_mode()?);
+    enable_raw_mode()?;
+
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut asi = async_stdin();
 
     terminal.clear()?;
 
     let mut app = App::new(path);
+    let res = run(&mut terminal, &mut app);
 
-    loop {
-        terminal.draw(|frame| render(frame, &mut app))?;
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
 
-        for k in asi.by_ref().keys() {
-            match k.unwrap() {
-                Key::Char('q') => {
-                    terminal.clear()?;
-                    return Ok(());
-                }
-                Key::Char('j') => app.next(),
-                Key::Char('k') => app.previous(),
-                Key::Char('h') => app.step_out(),
-                Key::Char('l') => app.step_in(),
-                _ => (),
-            }
-        }
+    if let Err(err) = res {
+        println!("{:?}", err)
     }
+
+    Ok(())
 }
