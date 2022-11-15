@@ -1,9 +1,9 @@
-# nix-spect: simple tui to inspect flakes
-
-WIP
+# nix-spect: simple and slow tui to inspect flakes
 
 ## Usage
 
-nix-spect <flake-uri>
+nix-spect \<flake-uri\>
 
-hjkl - movement
+h/j/k/l - movement
+d/u - up/down 10
+g/e - top/bottom

@@ -30,13 +30,33 @@ impl<T> StatefulList<T> {
         list
     }
 
-    fn next(&mut self) {
+    fn next(&mut self, num: usize) {
+        let len = if !self.items.is_empty() {
+            self.items.len()
+        } else {
+            return;
+        };
+
+        let i = match self.state.selected() {
+            Some(i) => (i + num) % (len - 1),
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    fn previous(&mut self, num: usize) {
+        let len = if !self.items.is_empty() {
+            self.items.len()
+        } else {
+            return;
+        };
+
         let i = match self.state.selected() {
             Some(i) => {
-                if i >= self.items.len() - 1 {
-                    0
+                if num > i {
+                    (len - 1) - ((num - i) % (len - 1))
                 } else {
-                    i + 1
+                    i - num
                 }
             }
             None => 0,
@@ -44,18 +64,18 @@ impl<T> StatefulList<T> {
         self.state.select(Some(i));
     }
 
-    fn previous(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.items.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
+    fn top(&mut self) {
+        self.state.select(Some(0));
+    }
+
+    fn bottom(&mut self) {
+        let len = if !self.items.is_empty() {
+            self.items.len()
+        } else {
+            return;
         };
-        self.state.select(Some(i));
+
+        self.state.select(Some(len - 1));
     }
 }
 
@@ -124,12 +144,32 @@ impl App {
     }
 
     fn previous(&mut self) {
-        self.current_items.previous();
+        self.current_items.previous(1);
         self.update_current_selected();
     }
 
     fn next(&mut self) {
-        self.current_items.next();
+        self.current_items.next(1);
+        self.update_current_selected();
+    }
+
+    fn next10(&mut self) {
+        self.current_items.next(10);
+        self.update_current_selected();
+    }
+
+    fn prev10(&mut self) {
+        self.current_items.previous(10);
+        self.update_current_selected();
+    }
+
+    fn top(&mut self) {
+        self.current_items.top();
+        self.update_current_selected();
+    }
+
+    fn bottom(&mut self) {
+        self.current_items.bottom();
         self.update_current_selected();
     }
 
@@ -220,7 +260,7 @@ fn get_completions(path: &str) -> Result<Vec<String>, String> {
 }
 
 fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
-    let chunks = Layout::default()
+    let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(frame.size());
@@ -244,6 +284,8 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
 
+    frame.render_stateful_widget(current_list, top_chunks[0], &mut app.current_items.state);
+
     match &app.preview_items {
         ListOrValue::List(list) => {
             let preview_items: Vec<ListItem> = list
@@ -257,7 +299,7 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
                     .title(&*app.current_selected),
             );
 
-            frame.render_widget(preview, chunks[1]);
+            frame.render_widget(preview, top_chunks[1]);
         }
         ListOrValue::Value(value) => {
             let preview = Paragraph::new(value.clone())
@@ -265,11 +307,9 @@ fn render<B: Backend>(frame: &mut Frame<B>, app: &mut App) {
                 .style(Style::default())
                 .block(Block::default().borders(Borders::ALL));
 
-            frame.render_widget(preview, chunks[1]);
+            frame.render_widget(preview, top_chunks[1]);
         }
     };
-
-    frame.render_stateful_widget(current_list, chunks[0], &mut app.current_items.state);
 }
 
 fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
@@ -286,6 +326,10 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> 
                     KeyCode::Char('k') => app.previous(),
                     KeyCode::Char('h') => app.step_out(),
                     KeyCode::Char('l') => app.step_in(),
+                    KeyCode::Char('d') => app.next10(),
+                    KeyCode::Char('u') => app.prev10(),
+                    KeyCode::Char('g') => app.top(),
+                    KeyCode::Char('e') => app.bottom(),
                     _ => (),
                 }
             }
